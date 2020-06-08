@@ -5,6 +5,7 @@ Averaging procedure, CSV-CSV
 """
 
 import numpy as np
+import struct as s
 import csv, os, time
 #import math
 import sys
@@ -34,19 +35,116 @@ def readCsv(name):
             dP.append(row)
         # File renumbering by particle IDs
         return {i : d for i, d in [[int(line['Idp']), line] for line in dP] }
-     
+        
+        # Convert fields to float and int
+        
+def writeCsv(name, data):
+    with open(name, 'w', newline='\n') as f:
+        w = csv.DictWriter(f,delimiter=";",fieldnames=data[0].keys())
+        #> Skip three lines
+        w.writeheader()
+        for index in data:
+            w.writerow(data[index])
+            
+def writeVtk(name, data):
+    Np = len(data)
+    fsca = [item for item in data[0].keys() if '.' not in item 
+               and 'Qf' not in item and ': ' not in item]
+    fvec = [item[:-2] for item in data[0].keys() 
+                if '.x' in item and 'Pos' not in item]
+    ften = [item[:-2] for item in data[0].keys() if 'xx' in item]
+        
+    with open(name[:-4]+'.vtk', 'w') as f:
+        f.write("# vtk DataFile Version 3.0\nTest VTK file for Force data\n"+
+            "BINARY\nDATASET POLYDATA\nPOINTS {} float\n".format(Np))  
     
-
-
+    with open(name[:-4]+'.vtk', 'ab') as f:    
+        w = b""  
+        for id in data:
+            w += s.pack('>fff'
+                , float(data[id]['Pos.x'])
+                , float(data[id]['Pos.y'])
+                , float(data[id]['Pos.z']))        
+        f.write(w)
+        
+    with open(name[:-4]+'.vtk', 'a') as f:
+        f.write("VERTICES {} {}\n".format(Np, Np*2))
+        
+    with open(name[:-4]+'.vtk', 'ab') as f:   
+        w = b""          
+        i = 0
+        for id in data:
+            w += s.pack('>ii', 1, i)    
+        f.write(w)
+        
+        
+    with open(name[:-4]+'.vtk', 'a') as f:
+        f.write("\nPOINT_DATA {}\nSCALARS Idp unsigned_int\nLOOKUP_TABLE default\n".format(Np))
+    
+    with open(name[:-4]+'.vtk', 'ab') as f:   
+        w = b""      
+        for id in data:
+            w += s.pack('>i', int(data[id]['Idp']))   
+        f.write(w) 
+        
+    with open(name[:-4]+'.vtk', 'a') as f:
+        f.write("FIELD FieldData {}\n".format(len(fsca)+len(fvec)))
+        
+    # Scalar loop
+    for item in fsca:  
+        with open(name[:-4]+'.vtk', 'a') as f:          
+            f.write("{} {} {} {}\n".format(item, 1, Np, "float"))
+            
+        with open(name[:-4]+'.vtk', 'ab') as f:   
+            w = b""      
+            for id in data:
+                w += s.pack('>f', float(data[id][item]))   
+            f.write(w) 
+            
+        with open(name[:-4]+'.vtk', 'a') as f:          
+            f.write("\n")
+            f.flush()
+    
+    # Vector loop
+    for item in fvec:  
+        with open(name[:-4]+'.vtk', 'a') as f:          
+            f.write("{} {} {} {}\n".format(item, 3, Np, "float"))
+            
+        with open(name[:-4]+'.vtk', 'ab') as f:   
+            w = b""      
+            for id in data:
+                w += s.pack('>fff', float(data[id][item+".x"])
+                    , float(data[id][item+".y"]), float(data[id][item+".z"]))   
+            f.write(w) 
+            
+        with open(name[:-4]+'.vtk', 'a') as f:          
+            f.write("\n")
+            f.flush()
+    
+    # Tensor loop
+     
+def defineFields(dic):
+    return [field for field in dic.keys() 
+        if 'Ace' in field or 'Gradv' in field or 'Strain' in field
+        or 'Press' in field or 'Vel' in field or 'VonM' in field
+        or 'Rhop' in field]
+    
+def initiateHandle(N, f):
+    h = {}
+    for i in range(N):
+        h[i] = {}
+        for field in f:
+            h[i][field] = 0.0
+    return h
 
 
 """ II. Main """
 ### 0. Prelude
 # Casename and parameters
 caseShort = "A2"
-N0 = 4
+N0 = 0
 NF = 10
-Navg = 4
+Navg = 1
 
 # Directory generation
 if not os.path.exists("..\\Output"):
@@ -70,159 +168,42 @@ for file in CsvList[N0-Navg:N0-1]:
     # fix the missing fields due to cell division, correct value 
 
 # File loop
-for file in CsvList:
+for file in CsvList[N0:NF]:
     currentName = "..\\Csv\\"+file
-    fileSubset.append(readCsv(currentName))        
-    # fix the missing fields due to cell division, correct value
+    writeName = "..\\Output\\Avg"+file[1:]
+    tic_loop = time.perf_counter()
     
-    # average over the list
+    # add new element in avg subset
+    fileSubset.append(readCsv(currentName))  
+      
+    #> fix the missing fields due to cell division, correct value
+    
+    # initiate the temporary handle (dictionary size particles x fields)
+    fields = defineFields(fileSubset[0][0])
+    temp = initiateHandle(len(fileSubset[0]), fields)
+#    for field in fields:
+#        temp[field] = 0.0
+    
+    # average over the list fileSubset
+    for sub in fileSubset:
+        for ptc in sub:
+            for field in fields:
+                temp[ptc][field] += float(sub[ptc][field])/Navg
+    handle = fileSubset[0]
+    for ptc in handle:
+        for field in fields:
+            handle[ptc][field] = temp[ptc][field]
+    
     
     # write a csv file renumbered
+    writeCsv(writeName, handle)
+    writeVtk(writeName, handle)
     
     # pop out the first element of the avg subset
+    fileSubset.pop(0)
+    toc_loop = time.perf_counter()
+    print(file+f" processed in  {toc_loop - tic_loop:0.4f} s")
     
-# write a new csv_stats
-
-
-##### Old file
-# Csv reading
-#CsvStatA = pd.read_csv(caseFolder + "/"+caseName+"_stats.csv",sep = ";",\
-#                   header=0, nrows=1)
-CsvStatB = pd.read_csv(caseFolder + "/"+caseName+"_stats.csv",sep = ";",\
-                       header=2);
-#Np = CsvStatA['Np'][0];
-Nstart = 0;
-#Nfiles = 10;
-Nfiles = len(CsvStatB);
-Navg = 4;
-
-for n in range(Nstart,Nstart+Nfiles):
-    # Csv read            
-    TempHandle = [];
-    for m in range(n, n-Navg, -1):
-        if(m<0): 
-            Csv0 = pd.read_csv(caseFolder + "/"+caseName+"_0000.csv",\
-                       sep = ";", header=2, index_col = 'Idp');
-        else: 
-            Csv0 = pd.read_csv(caseFolder + "/"+caseName+"_{:04d}.csv".format(m),\
-                       sep = ";", header=2, index_col = 'Idp');
-        TempHandle.append(Csv0);      
-        
-    # Duplication of missing particles
-    for i in range(len(TempHandle)-1,0,-1):
-        if (TempHandle[i-1].shape != TempHandle[i].shape):
-            idp = list(range(TempHandle[i].shape[0], TempHandle[i-1].shape[0]))
-            #print(TempHandle[i-1].loc[idp])
-            for j in range(i,len(TempHandle)):
-                TempHandle[j]=TempHandle[j].append(TempHandle[i-1].loc[idp])   
-                
-    # Data process - Duplicate positions
-    for df in TempHandle:
-        df['Pos.x'] = TempHandle[0]['Pos.x']
-        df['Pos.y'] = TempHandle[0]['Pos.y']
-        df['Pos.z'] = TempHandle[0]['Pos.z']
-        #print(df['Pos.x'])
-        
-    # Data process - Average over Navg 
-    TempData = pd.DataFrame().reindex_like(TempHandle[0]).fillna(0)
-    
-    for x in TempHandle:
-        TempData = TempData.add(x)
-    TempData = TempData.div(Navg)
-    TempData['Idp'] = TempData.index
-    Data = []
-    for index, row in TempData.iterrows():
-        Data.append(row.tolist())
-    Np = TempData.shape[0]
-                       
-    # Generation Vtk and Header
-    vtkName = caseFolder + "/" + caseName + f"_Avg{Navg}_{n:04d}.vtk"
-    fic = open(vtkName, "w+")
-    fic.write("# vtk DataFile Version 3.0\n")
-    fic.write("vtk output\n")
-    fic.write("ASCII\n")
-    fic.write("DATASET POLYDATA\n")
-    
-    fic.write("POINTS {} float\n".format(Np))   
-    for line in Data :
-        fic.write("{} {} {}\n".format(line[0], line[1], line[2]))    
-        
-    fic.write("VERTICES {} {}\n".format(Np,2*Np)) 
-    vertices = np.transpose(np.array([np.ones(Np, dtype = int),\
-        np.linspace(0,Np-1,Np, dtype = int)]))
-    for line in vertices :
-        fic.write("{} {}\n".format(line[0], line[1]))
-        
-    # Write field  data
-    fic.write("POINT_DATA {}\n".format(Np))    
-    fic.write("SCALARS Idp unsigned_int\n")
-    fic.write("LOOKUP_TABLE default\n") 
-    for line in Data :
-        fic.write("{} ".format(int(line[23])))
-        
-    fic.write("\nFIELD FieldData {}\n".format(9))
-    fic.write("Vel 3 {} float\n".format(Np))
-    for line in Data :
-        fic.write("{} {} {} ".format(line[3],line[4],line[5]))
-        
-    fic.write("\nRhop 1 {} float\n".format(Np))    
-    for line in Data :
-        fic.write("{} ".format(line[6]))
-        
-    fic.write("\nMass 1 {} float\n".format(Np))
-    for line in Data :
-        fic.write("{} ".format(line[7]))
-    
-    fic.write("\nPress 1 {} float\n".format(Np))
-    for line in Data :
-        fic.write("{} ".format(line[8]))
-        
-    fic.write("\nType 1 {} unsigned_char\n".format(Np))
-    for line in Data :
-        fic.write("{} ".format(int(line[9])))
-        
-    fic.write("\nCellOffSpring 1 {} unsigned_int\n".format(Np))
-    for line in Data :
-        fic.write("{} ".format(int(line[10])))
-        
-    fic.write("\nGradVel 1 {} float\n".format(Np))
-    for line in Data :
-        fic.write("{} ".format(line[11]))
-        
-    fic.write("\nVonMises3D 1 {} float\n".format(Np))
-    for line in Data :
-        fic.write("{} ".format(line[21]))        
-    
-    fic.write("\nStrainDot 3 {} float\n".format(Np))
-    for line in Data :
-        fic.write("{} {} {} ".format(line[18],line[19],line[20]))        
-    
-    # Write tensor data
-    fic.write("\nTENSORS Deformation float\n")    
-    for line in Data :
-        Q = np.array([[line[12],line[13],line[14]],[line[13],line[15]\
-                      , line[16]],[line[13],line[16],line[17]]], dtype=float)
-        Qi = computeTransformedMatrix(Q)
-        fic.write("{} {} {} {} {} {} {} {} {} ".format(\
-            Qi[0,0],Qi[0,1],Qi[0,2],Qi[1,0],Qi[1,1],Qi[1,2],\
-            Qi[2,0],Qi[2,1],Qi[2,2]))   
-    
-    #from numpy.linalg import inv
-    """for i in range(0,Np):
-        Qi = computeTransformedMatrix(\
-            np.array([[Csv0['Qfxx'][i], Csv0['Qfxy'][i], Csv0['Qfxz'][i]]\
-                      , [Csv0['Qfxy'][i],Csv0['Qfyy'][i],Csv0['Qfyz'][i]]\
-                      , [Csv0['Qfxz'][i],Csv0['Qfyz'][i],Csv0['Qfzz'][i]]]))     
-        appT(fic,Qi[0,0],Qi[0,1],Qi[0,2]\
-         ,Qi[1,0],Qi[1,1],Qi[1,2]\
-         ,Qi[2,0],Qi[2,1],Qi[2,2]) """
-    
-    # End
-    fic.close() 
-    #print(caseName + "_Avg_{:04d}.vtk created".format(n) )  
-    toc = time.perf_counter()
-    #print(f"Computation in {toc - tic:0.4f} seconds")
-    print(caseName + \
-          f"_Avg{Navg}_{n:04d}.vtk done ({(toc - tic)*((Nfiles)/(n+1)-1):0.4f} s remains)")
-
-
+#> write a new csv_stats
+toc = time.perf_counter()
+print(f"Processed achieved in  {toc - tic:0.4f} s")
